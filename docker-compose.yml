@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # IPFS 节点
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: shared-ipfs
+    ports:
+      - "5001:5001"  # API
+      - "4001:4001"  # Swarm
+      - "8080:8080"  # Gateway
+    volumes:
+      - ipfs-data:/data/ipfs
+    environment:
+      - IPFS_PROFILE=server
+    restart: unless-stopped
+
+  # Go 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: shared-backend
+    ports:
+      - "8081:8080"
+    environment:
+      - IPFS_API_URL=ipfs:5001
+      - PORT=8080
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+    depends_on:
+      - ipfs
+    restart: unless-stopped
+
+  # 前端（生产构建）
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: shared-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_BACKEND_URL=http://localhost:8081
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  ipfs-data:
+
+networks:
+  default:
+    name: shared-network
