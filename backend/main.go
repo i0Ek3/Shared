@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -22,18 +24,35 @@ type IPFSService struct {
 }
 
 type UploadResponse struct {
-	Hash string `json:"hash"`
-	URL  string `json:"url"`
+	Hash string   `json:"hash"`
+	URL  string   `json:"url"`
+	Tags []string `json:"tags"` // 新增：返回提取的标签
 }
 
 type PostData struct {
-	Type      string `json:"type"`
-	Content   string `json:"content"`
-	Timestamp int64  `json:"timestamp"`
+	Type      string   `json:"type"`
+	Content   string   `json:"content"`
+	Timestamp int64    `json:"timestamp"`
+	Tags      []string `json:"tags"` // 新增：标签
 	Metadata  struct {
 		MimeType string `json:"mimeType"`
 	} `json:"metadata"`
 }
+
+// 搜索请求
+type SearchRequest struct {
+	Query      string `json:"query"`
+	SearchType string `json:"searchType"` // "tag" 或 "content"
+}
+
+// 搜索结果
+type SearchResult struct {
+	Posts []PostData `json:"posts"`
+	Count int        `json:"count"`
+}
+
+// 标签提取正则（支持中英文）
+var tagRegex = regexp.MustCompile(`#([a-zA-Z0-9\p{Han}]+)`)
 
 func NewIPFSService(apiURL string) *IPFSService {
 	return &IPFSService{
@@ -41,11 +60,41 @@ func NewIPFSService(apiURL string) *IPFSService {
 	}
 }
 
+// 从文本中提取标签
+func extractTags(text string) []string {
+	matches := tagRegex.FindAllStringSubmatch(text, -1)
+	tags := make([]string, 0)
+	seen := make(map[string]bool)
+
+	for _, match := range matches {
+		if len(match) > 1 {
+			tag := match[1]
+			// 去重
+			if !seen[tag] {
+				tags = append(tags, tag)
+				seen[tag] = true
+			}
+		}
+	}
+
+	return tags
+}
+
+// 从内容中移除标签标记（可选，保留原文）
+func removeTagMarkers(text string) string {
+	// 如果想保留 # 号，就不用这个函数
+	return tagRegex.ReplaceAllString(text, "$1")
+}
+
 func (s *IPFSService) UploadText(text string) (*UploadResponse, error) {
+	// 提取标签
+	tags := extractTags(text)
+
 	postData := PostData{
 		Type:      "text",
-		Content:   text,
+		Content:   text, // 保留原始内容（包含 # 标记）
 		Timestamp: time.Now().Unix(),
+		Tags:      tags,
 	}
 	postData.Metadata.MimeType = "text/plain"
 
@@ -62,6 +111,7 @@ func (s *IPFSService) UploadText(text string) (*UploadResponse, error) {
 	return &UploadResponse{
 		Hash: hash,
 		URL:  fmt.Sprintf("https://ipfs.io/ipfs/%s", hash),
+		Tags: tags,
 	}, nil
 }
 
@@ -72,11 +122,12 @@ func (s *IPFSService) UploadFile(file io.Reader, mimeType string, fileType strin
 		return nil, fmt.Errorf("failed to upload file to IPFS: %w", err)
 	}
 
-	// 创建元数据
+	// 创建元数据（文件没有标签）
 	postData := PostData{
 		Type:      fileType,
-		Content:   fileHash, // 存储文件的 IPFS 哈希
+		Content:   fileHash,
 		Timestamp: time.Now().Unix(),
+		Tags:      []string{}, // 文件类型暂不支持标签
 	}
 	postData.Metadata.MimeType = mimeType
 
@@ -85,7 +136,6 @@ func (s *IPFSService) UploadFile(file io.Reader, mimeType string, fileType strin
 		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	// 上传元数据
 	metadataHash, err := s.shell.Add(bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload metadata to IPFS: %w", err)
@@ -94,17 +144,59 @@ func (s *IPFSService) UploadFile(file io.Reader, mimeType string, fileType strin
 	return &UploadResponse{
 		Hash: metadataHash,
 		URL:  fmt.Sprintf("https://ipfs.io/ipfs/%s", metadataHash),
+		Tags: []string{},
 	}, nil
 }
 
 func (s *IPFSService) GetContent(hash string) ([]byte, error) {
-	reader, err := s.shell.Cat(hash)
+	readCloser, err := s.shell.Cat(hash)
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
-	
-	return io.ReadAll(reader)
+	defer readCloser.Close()
+
+	return io.ReadAll(readCloser)
+}
+
+// 搜索内容（从 IPFS 中模糊匹配）
+func (s *IPFSService) SearchContent(query string, allHashes []string) ([]PostData, error) {
+	results := make([]PostData, 0)
+	query = strings.ToLower(query)
+
+	for _, hash := range allHashes {
+		readCloser, err := s.shell.Cat(hash)
+		if err != nil {
+			continue
+		}
+
+		content, err := io.ReadAll(readCloser)
+		readCloser.Close()
+		if err != nil {
+			continue
+		}
+
+		var postData PostData
+		if err := json.Unmarshal(content, &postData); err != nil {
+			continue
+		}
+
+		// 模糊搜索：检查内容或标签
+		contentLower := strings.ToLower(postData.Content)
+		if strings.Contains(contentLower, query) {
+			results = append(results, postData)
+			continue
+		}
+
+		// 检查标签
+		for _, tag := range postData.Tags {
+			if strings.Contains(strings.ToLower(tag), query) {
+				results = append(results, postData)
+				break
+			}
+		}
+	}
+
+	return results, nil
 }
 
 func setupRouter(ipfsService *IPFSService) *gin.Engine {
@@ -125,7 +217,7 @@ func setupRouter(ipfsService *IPFSService) *gin.Engine {
 		})
 	})
 
-	// 上传文本
+	// 上传文本（返回标签）
 	r.POST("/api/upload/text", func(c *gin.Context) {
 		var req struct {
 			Text string `json:"text" binding:"required"`
@@ -190,6 +282,24 @@ func setupRouter(ipfsService *IPFSService) *gin.Engine {
 		c.JSON(http.StatusOK, postData)
 	})
 
+	// 搜索接口（新增）
+	r.POST("/api/search", func(c *gin.Context) {
+		var req SearchRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+			return
+		}
+
+		// 注意：这是简化实现
+		// 实际应该维护一个内容索引或使用区块链事件
+		// 这里只是演示搜索逻辑
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Search functionality requires frontend integration with smart contract",
+			"query":   req.Query,
+			"type":    req.SearchType,
+		})
+	})
+
 	return r
 }
 
@@ -201,7 +311,7 @@ func main() {
 
 	ipfsURL := os.Getenv("IPFS_API_URL")
 	if ipfsURL == "" {
-		ipfsURL = "localhost:5001" // 默认本地 IPFS 节点
+		ipfsURL = "localhost:5001"
 	}
 
 	port := os.Getenv("PORT")
@@ -221,11 +331,12 @@ func main() {
 	}
 
 	log.Println("✅ Connected to IPFS successfully")
+	log.Println("✅ Tag extraction enabled (支持中英文标签)")
 
 	// 启动服务器
 	router := setupRouter(ipfsService)
 	log.Printf("🚀 Server starting on port %s...", port)
-	
+
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("❌ Failed to start server: %v", err)
 	}

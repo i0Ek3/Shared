@@ -80,6 +80,23 @@ Shared 是一个基于区块链和 IPFS 的去中心化内容分享平台。用�
 
 
 
+### 5. 标签系统
+
+- 支持标签 `#标签名`
+- 支持中英文混合
+- 标签提取
+
+
+
+### 6. 搜索功能
+
+- 支持全文搜索
+- 按标签精确筛选
+- 支持部分匹配
+- 显示使用频率最高的标签
+
+
+
 ## 🏗️ 技术架构
 
 ```
@@ -342,44 +359,6 @@ npm run preview
 
 - **Sepolia Faucet**: https://sepoliafaucet.com/
 - **Alchemy Faucet**: https://sepoliafaucet.com/
-
-
-
-## 📁 项目核心结构
-
-```
-Shared
-├── backend/
-│   ├── Dockerfile
-│   ├── go.mod
-│   ├── go.sum
-│   └── main.go
-├── contracts/
-│   ├── contracts/
-│   ├── hardhat.config.js
-│   ├── ignition/
-│   ├── package.json
-│   ├── README.md
-│   ├── scripts/
-│   └── test/
-├── docker-compose.yml
-├── frontend/
-│   ├── eslint.config.js
-│   ├── index.html
-│   ├── package.json
-│   ├── postcss.config.js
-│   ├── src/
-│   ├── tailwind.config.js
-│   ├── tsconfig.app.json
-│   ├── tsconfig.json
-│   ├── tsconfig.node.json
-│   └── vite.config.ts
-├── package.json
-├── README.md
-└── scripts/
-    ├── dev-start.sh
-    └── install-all.sh
-```
 
 
 
